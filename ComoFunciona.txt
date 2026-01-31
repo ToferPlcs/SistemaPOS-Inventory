@@ -1,0 +1,43 @@
+Paso 1: El motor (Python)
+El código es como una partitura de música, y necesitas el músico que la sepa leer. Ese es Python.
+
+Ve a python.org.
+
+Descarga la última versión.
+
+¡OJO! Importante: Al instalar, marca la casilla que dice "Add Python to PATH". Si no marcas esto, nada funcionará.
+
+Paso 2: La librería de PDFs
+Python viene "de fábrica" con muchas cosas, pero no sabe hacer PDFs por sí solo. Necesitamos instalarle el módulo reportlab.
+
+Abre la terminal de tu computador (Inicio -> escribe cmd -> Enter).
+
+Escribe esto y dale Enter: pip install reportlab
+
+Paso 3: Tu Logo
+Como vimos antes:
+
+Toma la imagen que me enviaste.
+
+Cámbiale el nombre a logo.jpeg.
+
+Ponla en la misma carpeta donde guardes el archivo del código (.py).
+
+Resumen: ¿Cómo lo hago funcionar ahora mismo?
+Si ya instalaste Python y la librería (Paso 1 y 2), haz esto:
+
+Crea una carpeta en tu escritorio llamada "SistemaPOS".
+
+Adentro, crea un archivo de texto, pega el código V3.1 que te di y guárdalo como ventas.py.
+
+Pon tu foto logo.jpeg al lado.
+
+Dale doble clic al archivo ventas.py.
+
+
+
+usuario: Cristian
+contraseña: mart3golp
+
+
+python -m PyInstaller --noconsole --onefile --name="MartilloGolpesPOS" ventas.py

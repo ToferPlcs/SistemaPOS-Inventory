@@ -1,0 +1,472 @@
+import tkinter as tk
+from tkinter import ttk, Toplevel
+import sqlite3
+from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+import os
+import sys
+import subprocess
+import webbrowser
+
+# ==========================================
+# CONFIGURACIÓN VISUAL
+# ==========================================
+COL_BG_MAIN = "#ECF0F1"
+COL_BG_FRAME = "#FFFFFF"
+COL_PRIMARY = "#2980B9"
+COL_ACCENT = "#1ABC9C"
+COL_TEXT_DARK = "#2C3E50"
+COL_TEXT_LIGHT = "#FFFFFF"
+COL_HEADER_TBL = "#34495E"
+COL_ALERT = "#C0392B"
+FONT_MAIN = ('Segoe UI', 10)
+FONT_BOLD = ('Segoe UI', 10, 'bold')
+FONT_TITLE = ('Segoe UI', 12, 'bold')
+
+ANCHO_TICKET = 80 * mm
+ALTO_BASE = 200 * mm
+
+# ==========================================
+# LOGIN (AHORA PANTALLA COMPLETA)
+# ==========================================
+class LoginApp:
+    def __init__(self, root, on_login_success):
+        self.root = root
+        self.on_login_success = on_login_success
+        self.root.title("Acceso Seguro")
+        
+        # --- CAMBIO: LOGIN MAXIMIZADO ---
+        self.root.state('zoomed') 
+        
+        self.root.configure(bg=COL_BG_MAIN)
+
+        # Contenedor para centrar la tarjeta de login
+        container = tk.Frame(root, bg=COL_BG_MAIN)
+        container.pack(expand=True, fill="both")
+
+        # Tarjeta Blanca (Frame) - Tamaño fijo para que se vea bien
+        frame = tk.Frame(container, bg=COL_BG_FRAME, padx=40, pady=50, highlightbackground=COL_PRIMARY, highlightthickness=1)
+        # place(relx=0.5, rely=0.5, anchor="center") centra el cuadro flotante
+        frame.place(relx=0.5, rely=0.5, anchor="center", width=450, height=500)
+        
+        tk.Label(frame, text="MARTILLO 3 GOLPES", font=("Segoe UI", 20, "bold"), bg=COL_BG_FRAME, fg=COL_PRIMARY).pack(pady=(0, 10))
+        tk.Label(frame, text="Sistema de Gestión POS", font=("Segoe UI", 12), bg=COL_BG_FRAME, fg="#7F8C8D").pack(pady=(0, 40))
+        
+        tk.Label(frame, text="Usuario", font=FONT_BOLD, bg=COL_BG_FRAME, fg=COL_TEXT_DARK).pack(anchor="w")
+        self.entry_user = ttk.Entry(frame, font=("Segoe UI", 14))
+        self.entry_user.pack(fill="x", pady=10)
+        self.entry_user.focus()
+        
+        tk.Label(frame, text="Contraseña", font=FONT_BOLD, bg=COL_BG_FRAME, fg=COL_TEXT_DARK).pack(anchor="w", pady=(20, 0))
+        self.entry_pass = ttk.Entry(frame, font=("Segoe UI", 14), show="●")
+        self.entry_pass.pack(fill="x", pady=10)
+        self.entry_pass.bind("<Return>", self.verificar_login)
+        
+        tk.Button(frame, text="INICIAR SESIÓN", bg=COL_PRIMARY, fg=COL_TEXT_LIGHT, font=("Segoe UI", 12, "bold"), 
+                  relief="flat", pady=12, cursor="hand2", command=self.verificar_login).pack(fill="x", pady=40)
+
+    def verificar_login(self, event=None):
+        if self.entry_user.get() == "Cristian" and self.entry_pass.get() == "mart3golp":
+            self.root.destroy(); self.on_login_success()
+        else:
+            pass # (En producción podrías poner un label de error aquí)
+
+# ==========================================
+# SISTEMA PRINCIPAL (PANTALLA COMPLETA)
+# ==========================================
+class SistemaVentasApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("POS MARTILLO 3 GOLPES - V10.7 FULL SCREEN TOTAL")
+        
+        # --- CAMBIO: SISTEMA MAXIMIZADO ---
+        self.root.state('zoomed')
+        
+        self.root.configure(bg=COL_BG_MAIN)
+        
+        self.conn = sqlite3.connect("inventario_empresa.db")
+        self.crear_tablas()
+        self.configurar_estilos()
+        
+        tabs = ttk.Notebook(root)
+        self.t_bodega = ttk.Frame(tabs, style="Card.TFrame"); tabs.add(self.t_bodega, text='BODEGA')
+        self.t_caja = ttk.Frame(tabs, style="Card.TFrame"); tabs.add(self.t_caja, text='CAJA DE VENTAS')
+        self.t_clientes = ttk.Frame(tabs, style="Card.TFrame"); tabs.add(self.t_clientes, text='BASE CLIENTES')
+        self.t_rep = ttk.Frame(tabs, style="Card.TFrame"); tabs.add(self.t_rep, text='REPORTES')
+        self.t_conf = ttk.Frame(tabs, style="Card.TFrame"); tabs.add(self.t_conf, text='CONFIGURACIÓN')
+        tabs.pack(expand=1, fill="both", padx=10, pady=10)
+        
+        self.ui_conf(); self.ui_bodega(); self.ui_cli(); self.ui_caja(); self.ui_rep()
+
+    def popup_msg(self, titulo, mensaje, error=False):
+        top = Toplevel(self.root)
+        top.title(titulo)
+        top.geometry("400x200") # Un poco más grande
+        top.configure(bg=COL_BG_FRAME)
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+        
+        x = self.root.winfo_x() + (self.root.winfo_width()/2) - 200
+        y = self.root.winfo_y() + (self.root.winfo_height()/2) - 100
+        top.geometry(f"+{int(x)}+{int(y)}")
+        
+        color_bar = COL_ALERT if error else COL_ACCENT
+        tk.Frame(top, bg=color_bar, height=5).pack(fill="x")
+        
+        tk.Label(top, text=titulo.upper(), font=FONT_BOLD, bg=COL_BG_FRAME, fg=color_bar).pack(pady=(25,5))
+        tk.Label(top, text=mensaje, font=FONT_MAIN, bg=COL_BG_FRAME, wraplength=350).pack(pady=10)
+        
+        tk.Button(top, text="ENTENDIDO", bg=COL_PRIMARY, fg=COL_TEXT_LIGHT, font=FONT_BOLD, 
+                  relief="flat", padx=20, pady=8, cursor="hand2", command=top.destroy).pack(pady=15)
+        self.root.wait_window(top)
+
+    def configurar_estilos(self):
+        s = ttk.Style()
+        s.theme_use('clam')
+        s.configure(".", background=COL_BG_MAIN, font=FONT_MAIN, foreground=COL_TEXT_DARK)
+        s.configure("Card.TFrame", background=COL_BG_FRAME)
+        s.configure("TNotebook.Tab", background="#BDC3C7", padding=[25, 12], font=FONT_BOLD, borderwidth=0)
+        s.map("TNotebook.Tab", background=[("selected", COL_PRIMARY)], foreground=[("selected", COL_TEXT_LIGHT)])
+        s.configure("TNotebook", background=COL_BG_MAIN, borderwidth=0)
+        s.configure("Treeview", background=COL_BG_FRAME, rowheight=35, borderwidth=0, font=FONT_MAIN)
+        s.configure("Treeview.Heading", background=COL_HEADER_TBL, foreground=COL_TEXT_LIGHT, font=FONT_BOLD, padding=8)
+        s.map("Treeview", background=[('selected', COL_PRIMARY)], foreground=[('selected', COL_TEXT_LIGHT)])
+        s.configure("TEntry", padding=5)
+        self.root.option_add('*TCombobox*Listbox.font', FONT_MAIN)
+
+    def crear_tablas(self):
+        c = self.conn.cursor()
+        c.execute("CREATE TABLE IF NOT EXISTS productos (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, nombre TEXT, proveedor TEXT, precio_iva REAL, stock INTEGER)")
+        c.execute("CREATE TABLE IF NOT EXISTS ventas (id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, tipo_doc TEXT, rut_cliente TEXT, total REAL, medio_pago TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, nombre_empresa TEXT, rut_empresa TEXT, direccion TEXT, telefono TEXT, correo TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS clientes (rut TEXT PRIMARY KEY, razon_social TEXT, direccion TEXT, giro TEXT)")
+        c.execute("SELECT count(*) FROM config")
+        if c.fetchone()[0] == 0:
+            c.execute("INSERT INTO config (id, nombre_empresa, rut_empresa, direccion, telefono, correo) VALUES (1, 'FERRETERÍA MARTILLO 3 GOLPES', '77.808.144-k', 'Simón Bolívar 284, Chillán', '995536798', 'Martillo3golpes@gmail.com')")
+        self.conn.commit()
+
+    def fmt_rut(self, r):
+        r = r.replace(".", "").replace("-", "").upper()
+        if len(r) < 2: return r
+        return f"{r[:-1][-8:][0:2]}.{r[:-1][-8:][2:5]}.{r[:-1][-8:][5:8]}-{r[-1]}" if len(r) > 1 else r
+
+    # --- CONFIGURACIÓN ---
+    def ui_conf(self):
+        f = ttk.LabelFrame(self.t_conf, text="Datos Institucionales", padding=20); f.pack(fill="both", expand=True, padx=30, pady=30)
+        lbls = ["Nombre Fantasía:", "RUT Empresa:", "Dirección:", "Teléfono:", "Correo Electrónico:"]
+        keys = ['nom', 'rut', 'dir', 'tel', 'mail']
+        self.e_cfg = {}
+        for i, l in enumerate(lbls):
+            ttk.Label(f, text=l, font=FONT_BOLD).grid(row=i, column=0, pady=12, sticky="e")
+            e = ttk.Entry(f, width=50); e.grid(row=i, column=1, padx=15)
+            self.e_cfg[keys[i]] = e
+        tk.Button(f, text="GUARDAR CONFIGURACIÓN", bg=COL_PRIMARY, fg="white", font=FONT_BOLD, relief="flat", padx=20, pady=10, command=self.save_cfg).grid(row=5, column=1, pady=30)
+        self.load_cfg()
+
+    def load_cfg(self):
+        c = self.conn.cursor(); c.execute("SELECT * FROM config WHERE id=1"); d = c.fetchone()
+        if d:
+            for i, k in enumerate(['nom', 'rut', 'dir', 'tel', 'mail']):
+                self.e_cfg[k].delete(0, tk.END); self.e_cfg[k].insert(0, d[i+1])
+            self.datos_emp = {"nom": d[1], "rut": d[2], "dir": d[3], "tel": d[4], "mail": d[5]}
+
+    def save_cfg(self):
+        v = [self.e_cfg[k].get() for k in ['nom', 'rut', 'dir', 'tel', 'mail']]
+        self.conn.cursor().execute("UPDATE config SET nombre_empresa=?, rut_empresa=?, direccion=?, telefono=?, correo=? WHERE id=1", v)
+        self.conn.commit(); self.load_cfg(); self.popup_msg("Éxito", "Datos de empresa actualizados correctamente.")
+
+    # --- BODEGA ---
+    def ui_bodega(self):
+        f = ttk.LabelFrame(self.t_bodega, text="Gestión de Producto", padding=15); f.pack(fill="x", padx=20, pady=20)
+        ttk.Label(f, text="Código de Barra:", font=FONT_BOLD).grid(row=0, column=0)
+        self.e_b_cod = ttk.Entry(f, width=20); self.e_b_cod.grid(row=0, column=1, padx=10)
+        self.e_b_cod.bind("<Return>", lambda e: self.e_b_nom.focus())
+        ttk.Label(f, text="Nombre Producto:", font=FONT_BOLD).grid(row=0, column=2)
+        self.e_b_nom = ttk.Entry(f, width=35); self.e_b_nom.grid(row=0, column=3, padx=10)
+        ttk.Label(f, text="Proveedor:", font=FONT_BOLD).grid(row=0, column=4)
+        self.e_b_prov = ttk.Entry(f, width=20); self.e_b_prov.grid(row=0, column=5, padx=10)
+        
+        ttk.Label(f, text="Precio Neto:", font=FONT_BOLD).grid(row=1, column=0, pady=15)
+        self.e_b_neto = ttk.Entry(f, width=15); self.e_b_neto.grid(row=1, column=1)
+        self.e_b_neto.bind("<KeyRelease>", self.calc_iva)
+        ttk.Label(f, text="Precio Venta (IVA):", font=FONT_BOLD).grid(row=1, column=2)
+        self.e_b_total = ttk.Entry(f, width=15); self.e_b_total.grid(row=1, column=3)
+        self.e_b_total.bind("<KeyRelease>", self.calc_neto)
+        ttk.Label(f, text="Stock Inicial:", font=FONT_BOLD).grid(row=1, column=4)
+        self.e_b_stk = ttk.Entry(f, width=10); self.e_b_stk.grid(row=1, column=5)
+        
+        tk.Button(f, text="GUARDAR PRODUCTO", bg=COL_PRIMARY, fg="white", font=FONT_BOLD, relief="flat", padx=15, command=self.save_prod).grid(row=1, column=6, padx=15)
+        
+        self.tree_bod = ttk.Treeview(self.t_bodega, columns=("C","N","P","V","S"), show="headings")
+        self.tree_bod.heading("C", text="CÓDIGO"); self.tree_bod.column("C", width=120)
+        self.tree_bod.heading("N", text="NOMBRE PRODUCTO"); self.tree_bod.column("N", width=300)
+        self.tree_bod.heading("P", text="PROVEEDOR"); self.tree_bod.column("P", width=150)
+        self.tree_bod.heading("V", text="PRECIO VENTA"); self.tree_bod.column("V", width=120)
+        self.tree_bod.heading("S", text="STOCK"); self.tree_bod.column("S", width=80)
+        self.tree_bod.pack(fill="both", expand=True, padx=20, pady=10)
+        self.load_bod()
+
+    def calc_iva(self, e):
+        try: self.e_b_total.delete(0,tk.END); self.e_b_total.insert(0, int(float(self.e_b_neto.get())*1.19))
+        except: pass
+    def calc_neto(self, e):
+        try: self.e_b_neto.delete(0,tk.END); self.e_b_neto.insert(0, int(float(self.e_b_total.get())/1.19))
+        except: pass
+
+    def save_prod(self):
+        c, n, p = self.e_b_cod.get(), self.e_b_nom.get(), self.e_b_prov.get()
+        try: pr, st = float(self.e_b_total.get()), int(self.e_b_stk.get())
+        except: self.popup_msg("Error", "El precio y stock deben ser números.", True); return
+        
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, stock FROM productos WHERE codigo=? AND codigo!=''", (c,))
+        exist = cursor.fetchone()
+        if not exist:
+             cursor.execute("SELECT id, stock FROM productos WHERE nombre=? AND proveedor=?", (n, p))
+             exist = cursor.fetchone()
+        
+        if exist:
+            cursor.execute("UPDATE productos SET stock=?, precio_iva=?, nombre=?, proveedor=?, codigo=? WHERE id=?", 
+                           (exist[1]+st, pr, n, p, c, exist[0]))
+            self.popup_msg("Stock Actualizado", f"Se sumaron {st} unidades al producto existente.")
+        else:
+            cursor.execute("INSERT INTO productos (codigo, nombre, proveedor, precio_iva, stock) VALUES (?,?,?,?,?)", (c,n,p,pr,st))
+            self.popup_msg("Éxito", "Producto nuevo creado correctamente.")
+        self.conn.commit(); self.load_bod()
+        for e in [self.e_b_cod, self.e_b_nom, self.e_b_prov, self.e_b_neto, self.e_b_total, self.e_b_stk]: e.delete(0, tk.END)
+
+    def load_bod(self):
+        for i in self.tree_bod.get_children(): self.tree_bod.delete(i)
+        for r in self.conn.cursor().execute("SELECT codigo, nombre, proveedor, precio_iva, stock FROM productos"):
+            self.tree_bod.insert("", tk.END, values=(r[0], r[1], r[2], f"${int(r[3]):,}".replace(",", "."), r[4]))
+
+    # --- CLIENTES ---
+    def ui_cli(self):
+        f = ttk.LabelFrame(self.t_clientes, text="Registro de Cliente", padding=15); f.pack(fill="x", padx=20, pady=20)
+        ttk.Label(f, text="RUT:").grid(row=0, column=0)
+        self.ec_rut = ttk.Entry(f); self.ec_rut.grid(row=0, column=1, padx=10); self.ec_rut.bind("<Return>", lambda e: self.fmt_cli_rut())
+        ttk.Label(f, text="Razón Social:").grid(row=0, column=2)
+        self.ec_raz = ttk.Entry(f, width=30); self.ec_raz.grid(row=0, column=3, padx=10)
+        ttk.Label(f, text="Dirección:").grid(row=0, column=4)
+        self.ec_dir = ttk.Entry(f, width=30); self.ec_dir.grid(row=0, column=5, padx=10)
+        tk.Button(f, text="GUARDAR DATOS", bg=COL_PRIMARY, fg="white", relief="flat", command=self.save_cli).grid(row=0, column=6, padx=15)
+        
+        self.tree_cli = ttk.Treeview(self.t_clientes, columns=("R","N","D"), show="headings")
+        self.tree_cli.heading("R", text="RUT"); self.tree_cli.heading("N", text="RAZÓN SOCIAL"); self.tree_cli.heading("D", text="DIRECCIÓN")
+        self.tree_cli.pack(fill="both", expand=True, padx=20, pady=10)
+        self.load_cli()
+
+    def fmt_cli_rut(self):
+        r = self.fmt_rut(self.ec_rut.get()); self.ec_rut.delete(0, tk.END); self.ec_rut.insert(0, r)
+    
+    def save_cli(self):
+        r, n, d = self.fmt_rut(self.ec_rut.get()), self.ec_raz.get(), self.ec_dir.get()
+        if not r or not n: self.popup_msg("Error", "Faltan datos obligatorios", True); return
+        self.conn.cursor().execute("INSERT OR REPLACE INTO clientes (rut, razon_social, direccion, giro) VALUES (?,?,?,?)", (r,n,d,""))
+        self.conn.commit(); self.load_cli(); self.ec_rut.delete(0, tk.END); self.ec_raz.delete(0, tk.END); self.ec_dir.delete(0, tk.END)
+        self.popup_msg("Cliente Guardado", "La base de datos de clientes ha sido actualizada.")
+
+    def load_cli(self):
+        for i in self.tree_cli.get_children(): self.tree_cli.delete(i)
+        for r in self.conn.cursor().execute("SELECT rut, razon_social, direccion FROM clientes"): self.tree_cli.insert("", tk.END, values=r)
+
+    # --- CAJA ---
+    def ui_caja(self):
+        top = tk.Frame(self.t_caja, bg=COL_BG_FRAME, pady=15); top.pack(fill="x", padx=10)
+        
+        lf_scan = ttk.LabelFrame(top, text="Escáner"); lf_scan.pack(side="left", padx=10)
+        self.e_scan = ttk.Entry(lf_scan, font=('Arial', 14), width=18); self.e_scan.pack(padx=10, pady=10)
+        self.e_scan.bind("<Return>", self.scan_prod); self.e_scan.focus_set()
+        
+        tk.Button(top, text="🔎 BUSCADOR MANUAL", bg="#F39C12", fg="white", font=FONT_BOLD, relief="flat", padx=15, command=self.open_find).pack(side="left", padx=20, fill="y")
+        
+        lf_pay = ttk.LabelFrame(top, text="Medio de Pago"); lf_pay.pack(side="left", padx=10)
+        self.cb_pay = ttk.Combobox(lf_pay, values=["Efectivo", "Debito", "Credito", "Transferencia"], state="readonly", font=FONT_MAIN); self.cb_pay.current(0); self.cb_pay.pack(padx=10, pady=12)
+
+        mid = tk.Frame(self.t_caja, bg=COL_BG_FRAME); mid.pack(fill="x", padx=20, pady=5)
+        self.v_tipo = tk.StringVar(value="Boleta")
+        style_rb = ttk.Style(); style_rb.configure('TRadiobutton', background=COL_BG_FRAME, font=FONT_MAIN)
+        ttk.Radiobutton(mid, text="Boleta", variable=self.v_tipo, value="Boleta", command=self.toggle_fact, style='TRadiobutton').pack(side="left")
+        ttk.Radiobutton(mid, text="Factura", variable=self.v_tipo, value="Factura", command=self.toggle_fact, style='TRadiobutton').pack(side="left", padx=20)
+        
+        self.f_cli_vta = tk.Frame(self.t_caja, bg=COL_BG_FRAME)
+        tk.Label(self.f_cli_vta, text="RUT:", bg=COL_BG_FRAME, font=FONT_BOLD).pack(side="left")
+        self.ev_rut = ttk.Entry(self.f_cli_vta, width=15); self.ev_rut.pack(side="left", padx=5); self.ev_rut.bind("<Return>", self.find_cli_vta)
+        tk.Label(self.f_cli_vta, text="Nombre:", bg=COL_BG_FRAME, font=FONT_BOLD).pack(side="left")
+        self.ev_nom = ttk.Entry(self.f_cli_vta, width=25); self.ev_nom.pack(side="left", padx=5)
+        tk.Label(self.f_cli_vta, text="Dirección:", bg=COL_BG_FRAME, font=FONT_BOLD).pack(side="left")
+        self.ev_dir = ttk.Entry(self.f_cli_vta, width=25); self.ev_dir.pack(side="left", padx=5)
+
+        self.tree_cart = ttk.Treeview(self.t_caja, columns=("P","C","T"), show="headings", height=12)
+        self.tree_cart.heading("P", text="PRODUCTO / DETALLE"); self.tree_cart.column("P", width=400)
+        self.tree_cart.heading("C", text="CANT"); self.tree_cart.column("C", width=80, anchor="center")
+        self.tree_cart.heading("T", text="TOTAL"); self.tree_cart.column("T", width=120, anchor="e")
+        self.tree_cart.pack(fill="both", expand=True, padx=20)
+        
+        self.lbl_total = tk.Label(self.t_caja, text="$0", font=('Segoe UI', 32, 'bold'), fg=COL_ACCENT, bg=COL_BG_MAIN); self.lbl_total.pack(pady=5)
+        tk.Button(self.t_caja, text="CONFIRMAR PAGO E IMPRIMIR (F12)", bg=COL_ACCENT, fg="white", font=('Segoe UI', 14, 'bold'), relief="flat", pady=10, command=self.pay).pack(fill="x", padx=20, pady=15)
+        self.root.bind("<F12>", lambda e: self.pay())
+        self.cart = []
+
+    def toggle_fact(self):
+        if self.v_tipo.get() == "Factura": self.f_cli_vta.pack(fill="x", padx=20)
+        else: self.f_cli_vta.pack_forget()
+
+    def find_cli_vta(self, e):
+        r = self.fmt_rut(self.ev_rut.get()); self.ev_rut.delete(0, tk.END); self.ev_rut.insert(0, r)
+        res = self.conn.cursor().execute("SELECT razon_social, direccion FROM clientes WHERE rut=?", (r,)).fetchone()
+        if res:
+            self.ev_nom.delete(0, tk.END); self.ev_nom.insert(0, res[0])
+            self.ev_dir.delete(0, tk.END); self.ev_dir.insert(0, res[1])
+        else: self.popup_msg("Cliente Nuevo", "RUT no encontrado. Ingrese los datos manualmente."); self.ev_nom.focus()
+
+    def scan_prod(self, e):
+        c = self.e_scan.get().strip(); 
+        if not c: return
+        p = self.conn.cursor().execute("SELECT id, nombre, precio_iva, stock FROM productos WHERE codigo=?", (c,)).fetchone()
+        if p: self.ask_qty(p); self.e_scan.delete(0, tk.END)
+        else: self.popup_msg("Error", "Producto no encontrado.", True); self.e_scan.delete(0, tk.END)
+
+    def open_find(self):
+        w = Toplevel(self.root); w.geometry("550x450"); w.configure(bg=COL_BG_MAIN); w.transient(self.root)
+        tk.Label(w, text="Buscar Producto por Nombre", font=FONT_BOLD, bg=COL_BG_MAIN).pack(pady=10)
+        e = ttk.Entry(w, width=40, font=FONT_MAIN); e.pack(pady=5); e.focus()
+        t = ttk.Treeview(w, columns=("N","P","S"), show="headings")
+        t.heading("N", text="Nombre"); t.heading("P", text="Precio"); t.heading("S", text="Stock")
+        t.pack(expand=True, fill="both", padx=10, pady=10)
+        def sch(ev):
+            for i in t.get_children(): t.delete(i)
+            for r in self.conn.cursor().execute("SELECT id, nombre, precio_iva, stock FROM productos WHERE nombre LIKE ?", (f"%{e.get()}%",)):
+                t.insert("", tk.END, values=(r[1], f"${int(r[2])}", r[3]), tags=(r[0], r[2]))
+        def sel(ev):
+            item = t.selection()
+            if item: 
+                v = t.item(item, "values"); tags = t.item(item, "tags")
+                w.destroy(); self.ask_qty((tags[0], v[0], tags[1], v[2]))
+        e.bind("<KeyRelease>", sch); t.bind("<Double-1>", sel)
+
+    def ask_qty(self, p):
+        stk = int(float(p[3]))
+        def add():
+            try:
+                q = int(eq.get())
+                if q > stk: self.popup_msg("Stock Insuficiente", f"Solo quedan {stk} unidades.", True); return
+                for i in self.cart:
+                    if str(i['id']) == str(p[0]):
+                        i['cant'] += q; i['tot'] = i['cant'] * float(p[2]); self.upd_cart(); w.destroy(); return
+                self.cart.append({"id": p[0], "nom": p[1], "cant": q, "pre": float(p[2]), "tot": q*float(p[2])})
+                self.upd_cart(); w.destroy()
+            except: pass
+
+        w = Toplevel(self.root); w.geometry("300x180"); w.configure(bg=COL_BG_FRAME); w.transient(self.root)
+        
+        # Centrar el popup de cantidad
+        wx = self.root.winfo_x() + (self.root.winfo_width()/2) - 150
+        wy = self.root.winfo_y() + (self.root.winfo_height()/2) - 90
+        w.geometry(f"+{int(wx)}+{int(wy)}")
+        
+        tk.Label(w, text=p[1], font=FONT_TITLE, bg=COL_BG_FRAME, fg=COL_PRIMARY).pack(pady=(20,5))
+        tk.Label(w, text=f"Disponible: {stk}", bg=COL_BG_FRAME).pack()
+        eq = ttk.Entry(w, font=("Segoe UI", 16), width=8, justify="center"); eq.pack(pady=10); eq.insert(0, "1"); eq.focus(); eq.bind("<Return>", lambda e: add())
+        tk.Button(w, text="AGREGAR", bg=COL_ACCENT, fg="white", font=FONT_BOLD, relief="flat", padx=20, command=add).pack()
+        self.root.wait_window(w)
+
+    def upd_cart(self):
+        for i in self.tree_cart.get_children(): self.tree_cart.delete(i)
+        gt = sum(x['tot'] for x in self.cart)
+        for x in self.cart:
+            self.tree_cart.insert("", tk.END, values=(x['nom'], x['cant'], f"${int(x['tot']):,}".replace(",", ".")))
+        self.lbl_total.config(text=f"${int(gt):,}".replace(",", "."))
+
+    def pay(self):
+        if not self.cart: return
+        gt = sum(x['tot'] for x in self.cart); cli = {"rut": "C.FINAL", "razon": "CONSUMIDOR"}
+        if self.v_tipo.get() == "Factura":
+            r, n, d = self.ev_rut.get(), self.ev_nom.get(), self.ev_dir.get()
+            if not r or not n: self.popup_msg("Error", "Para Factura ingrese RUT y Razón Social.", True); return
+            cli = {"rut": r, "razon": n, "dir": d}
+            self.conn.cursor().execute("INSERT OR REPLACE INTO clientes (rut, razon_social, direccion, giro) VALUES (?,?,?,?)", (r,n,d,""))
+        
+        d = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i in self.cart: self.conn.cursor().execute("UPDATE productos SET stock = stock - ? WHERE id=?", (i['cant'], i['id']))
+        self.conn.cursor().execute("INSERT INTO ventas (fecha, tipo_doc, rut_cliente, total, medio_pago) VALUES (?,?,?,?,?)", (d, self.v_tipo.get(), cli['rut'], gt, self.cb_pay.get()))
+        self.conn.commit(); self.gen_pdf(cli, gt, d)
+        self.cart = []; self.upd_cart(); self.load_bod()
+
+    def gen_pdf(self, cli, gt, fecha):
+        fn = f"ticket_{datetime.now().strftime('%H%M%S')}.pdf"
+        c = canvas.Canvas(fn, pagesize=(ANCHO_TICKET, ALTO_BASE + (len(self.cart)*15)))
+        emp = self.datos_emp
+        y = ALTO_BASE + (len(self.cart)*15) - 20
+        
+        if os.path.exists("logo.jpeg"): 
+            try: c.drawImage("logo.jpeg", 25*mm, y-25*mm, 30*mm, 30*mm, mask='auto'); y -= 30*mm
+            except: pass
+        
+        c.setFont("Helvetica-Bold", 10); c.drawCentredString(ANCHO_TICKET/2, y, emp['nom']); y-=12
+        c.setFont("Helvetica", 8)
+        for l in [f"RUT: {emp['rut']}", emp['dir'], f"Fono: {emp['tel']}", f"Email: {emp['mail']}"]:
+            c.drawCentredString(ANCHO_TICKET/2, y, l); y-=10
+        
+        y -= 5; c.line(5, y, ANCHO_TICKET-5, y); y -= 10
+        c.drawString(5, y, f"Fecha: {fecha}"); y -= 10; c.drawString(5, y, f"Pago: {self.cb_pay.get()}"); y -= 10
+        if self.v_tipo.get() == "Factura":
+            c.drawString(5, y, f"Cliente: {cli['razon'][:20]}"); y-=10
+            c.drawString(5, y, f"RUT: {cli['rut']}"); y-=10
+            c.drawString(5, y, f"Dir: {cli.get('dir','')}"); y-=15
+
+        y -= 5; c.setFont("Helvetica-Bold", 8)
+        c.drawCentredString(15*mm, y, "CANT"); c.drawString(25*mm, y, "DETALLE"); c.drawRightString(75*mm, y, "TOTAL"); y -= 3
+        c.line(5, y, ANCHO_TICKET-5, y); y -= 10
+        
+        c.setFont("Helvetica", 8)
+        for i in self.cart:
+            c.drawCentredString(15*mm, y, str(i['cant']))
+            c.drawString(25*mm, y, i['nom'][:18])
+            c.drawRightString(75*mm, y, f"${int(i['tot']):,}".replace(",", ".")); y -= 10
+            
+        y -= 5; c.line(5, y, ANCHO_TICKET-5, y); y -= 15
+        c.setFont("Helvetica-Bold", 14); c.drawRightString(75*mm, y, f"TOTAL: ${int(gt):,}".replace(",", ".")); y -= 15
+        c.setFont("Helvetica", 8); c.drawCentredString(ANCHO_TICKET/2, y, "¡Gracias por su compra!"); c.save()
+        if sys.platform == "win32":
+            try: os.startfile(fn, "print")
+            except: pass
+        webbrowser.open(fn)
+
+    # --- REPORTES PROFESIONALES ---
+    def ui_rep(self):
+        tk.Button(self.t_rep, text="GENERAR REPORTE DEL DÍA", bg=COL_PRIMARY, fg="white", font=FONT_BOLD, relief="flat", padx=20, pady=10, command=self.load_rep).pack(pady=20)
+        self.txt_rep = tk.Text(self.t_rep, height=25, font=('Consolas', 10), padx=20, pady=20); self.txt_rep.pack(fill="both", expand=True, padx=20, pady=10)
+
+    def load_rep(self):
+        h = datetime.now().strftime("%Y-%m-%d")
+        c = self.conn.cursor()
+        c.execute("SELECT SUM(total), COUNT(*) FROM ventas WHERE fecha LIKE ?", (f"{h}%",))
+        res = c.fetchone(); t = res[0] or 0; cnt = res[1]
+        c.execute("SELECT medio_pago, SUM(total) FROM ventas WHERE fecha LIKE ? GROUP BY medio_pago", (f"{h}%",)); d = c.fetchall()
+        
+        avg = int(t/cnt) if cnt > 0 else 0
+        
+        txt = f"{'='*40}\n"
+        txt += f"   REPORTE DE GESTIÓN DIARIO   \n"
+        txt += f"   Fecha: {h}\n"
+        txt += f"{'='*40}\n\n"
+        txt += f" VENTAS TOTALES:    ${int(t):,}\n".replace(",", ".")
+        txt += f" TRANSACCIONES:     {cnt}\n"
+        txt += f" TICKET PROMEDIO:   ${avg:,}\n\n".replace(",", ".")
+        txt += f"{'-'*40}\n"
+        txt += f" DESGLOSE POR MEDIO DE PAGO\n"
+        txt += f"{'-'*40}\n"
+        for m, v in d:
+            medio = (m if m else "Otros").ljust(20)
+            txt += f" > {medio} ${int(v):,}\n".replace(",", ".")
+        txt += f"{'='*40}\n"
+        
+        self.txt_rep.delete("1.0", tk.END); self.txt_rep.insert(tk.END, txt)
+
+if __name__ == "__main__":
+    root = tk.Tk(); root.withdraw()
+    LoginApp(Toplevel(root), lambda: [root.deiconify(), SistemaVentasApp(root)])
+    root.mainloop()

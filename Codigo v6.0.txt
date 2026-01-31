@@ -1,0 +1,386 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import sqlite3
+from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+import os
+import sys
+import subprocess
+
+# ==========================================
+# CONFIGURACIÓN GLOBAL
+# ==========================================
+ANCHO_TICKET = 80 * mm
+ALTO_BASE = 180 * mm
+
+class SistemaVentasApp:
+    def __init__(self, root):
+        self.root = root
+        # NOMBRE CORREGIDO EN LA VENTANA
+        self.root.title("POS FERRETERÍA MARTILLO 3 GOLPES - CHILLÁN") 
+        self.root.geometry("1200x750")
+        
+        self.conn = sqlite3.connect("inventario_empresa.db")
+        self.crear_tablas()
+        
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("Treeview", rowheight=25, font=('Arial', 10))
+        self.root.option_add('*TCombobox*Listbox.font', ('Arial', 11))
+        
+        # Pestañas
+        tabControl = ttk.Notebook(root)
+        self.tab_inventario = ttk.Frame(tabControl)
+        self.tab_ventas = ttk.Frame(tabControl)
+        self.tab_config = ttk.Frame(tabControl)
+        
+        tabControl.add(self.tab_inventario, text='1. Bodega (Ingreso con Pistola)')
+        tabControl.add(self.tab_ventas, text='2. Caja / Vender')
+        tabControl.add(self.tab_config, text='3. Datos Empresa')
+        tabControl.pack(expand=1, fill="both")
+        
+        self.interfaz_config()
+        self.interfaz_inventario()
+        self.interfaz_ventas()
+
+    def crear_tablas(self):
+        cursor = self.conn.cursor()
+        
+        # 1. Tabla Productos
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS productos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                codigo TEXT,
+                nombre TEXT NOT NULL,
+                proveedor TEXT,
+                precio_iva REAL NOT NULL,
+                stock INTEGER NOT NULL
+            )
+        """)
+        
+        # 2. Tabla Ventas
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ventas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha TEXT,
+                tipo_doc TEXT,
+                rut_cliente TEXT,
+                total REAL
+            )
+        """)
+        
+        # 3. Tabla Configuración
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS config (
+                id INTEGER PRIMARY KEY,
+                nombre_empresa TEXT,
+                rut_empresa TEXT,
+                direccion TEXT,
+                telefono TEXT,
+                correo TEXT
+            )
+        """)
+        
+        # --- AQUÍ INSERTAMOS LOS DATOS CORREGIDOS ---
+        cursor.execute("SELECT count(*) FROM config")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                INSERT INTO config (id, nombre_empresa, rut_empresa, direccion, telefono, correo) 
+                VALUES (1, 'FERRETERÍA MARTILLO 3 GOLPES', '77.808.144-k', 'Simón Bolívar 284, Chillán', '995536798', 'Martillo3golpes@gmail.com')
+            """)
+        self.conn.commit()
+
+    # ==========================================
+    # MÓDULO 3: CONFIGURACIÓN
+    # ==========================================
+    def interfaz_config(self):
+        frame = ttk.LabelFrame(self.tab_config, text="Datos de la Ferretería")
+        frame.pack(padx=50, pady=30, fill="both")
+        
+        etiquetas = [("Nombre:", "nom"), ("RUT:", "rut"), ("Dirección:", "dir"), ("Teléfono:", "tel"), ("Correo:", "mail")]
+        self.entries_cfg = {}
+        
+        for i, (texto, clave) in enumerate(etiquetas):
+            ttk.Label(frame, text=texto).grid(row=i, column=0, pady=10, sticky="e")
+            entry = ttk.Entry(frame, width=50)
+            entry.grid(row=i, column=1, pady=10, padx=10)
+            self.entries_cfg[clave] = entry
+            
+        ttk.Button(frame, text="GUARDAR CAMBIOS", command=self.guardar_config).grid(row=5, column=1, pady=20)
+        self.cargar_datos_config()
+
+    def cargar_datos_config(self):
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM config WHERE id=1")
+        data = cur.fetchone()
+        if data:
+            self.entries_cfg['nom'].delete(0, tk.END); self.entries_cfg['nom'].insert(0, data[1])
+            self.entries_cfg['rut'].delete(0, tk.END); self.entries_cfg['rut'].insert(0, data[2])
+            self.entries_cfg['dir'].delete(0, tk.END); self.entries_cfg['dir'].insert(0, data[3])
+            self.entries_cfg['tel'].delete(0, tk.END); self.entries_cfg['tel'].insert(0, data[4])
+            self.entries_cfg['mail'].delete(0, tk.END); self.entries_cfg['mail'].insert(0, data[5])
+            self.datos_empresa = {"nom": data[1], "rut": data[2], "dir": data[3], "tel": data[4], "mail": data[5]}
+
+    def guardar_config(self):
+        vals = [self.entries_cfg[k].get() for k in ['nom', 'rut', 'dir', 'tel', 'mail']]
+        self.conn.cursor().execute("UPDATE config SET nombre_empresa=?, rut_empresa=?, direccion=?, telefono=?, correo=? WHERE id=1", vals)
+        self.conn.commit()
+        messagebox.showinfo("Éxito", "Datos actualizados correctamente")
+        self.cargar_datos_config()
+
+    # ==========================================
+    # MÓDULO 1: BODEGA (Pistola Automática)
+    # ==========================================
+    def interfaz_inventario(self):
+        frame_form = ttk.LabelFrame(self.tab_inventario, text="Ingreso de Mercadería")
+        frame_form.pack(padx=10, pady=10, fill="x")
+        
+        ttk.Label(frame_form, text="1. Cód. Barras (Pistolear):", font=('Arial', 10, 'bold')).grid(row=0, column=0, padx=5, pady=5)
+        self.entry_inv_cod = ttk.Entry(frame_form, width=25)
+        self.entry_inv_cod.grid(row=0, column=1, padx=5, pady=5)
+        
+        # AL PISTOLEAR -> SALTA AL NOMBRE
+        self.entry_inv_cod.bind("<Return>", lambda e: self.entry_inv_nom.focus())
+
+        ttk.Label(frame_form, text="2. Nombre:").grid(row=0, column=2, padx=5)
+        self.entry_inv_nom = ttk.Entry(frame_form, width=30)
+        self.entry_inv_nom.grid(row=0, column=3, padx=5)
+
+        ttk.Label(frame_form, text="3. Proveedor:").grid(row=0, column=4, padx=5)
+        self.entry_inv_prov = ttk.Entry(frame_form, width=20)
+        self.entry_inv_prov.grid(row=0, column=5, padx=5)
+        
+        ttk.Label(frame_form, text="Precio Venta (IVA Inc):").grid(row=1, column=0, padx=5, pady=10)
+        self.entry_inv_final = ttk.Entry(frame_form, width=15)
+        self.entry_inv_final.grid(row=1, column=1, padx=5)
+        
+        ttk.Label(frame_form, text="Cantidad a Ingresar:").grid(row=1, column=2, padx=5)
+        self.entry_inv_stock = ttk.Entry(frame_form, width=10)
+        self.entry_inv_stock.grid(row=1, column=3, padx=5)
+        
+        btn_save = tk.Button(frame_form, text="GUARDAR PRODUCTO", bg="#3498db", fg="white", font=('Arial', 10, 'bold'), command=self.guardar_producto)
+        btn_save.grid(row=1, column=4, columnspan=2, sticky="we", padx=10)
+
+        cols = ("Cód", "Nombre", "Proveedor", "Precio", "Stock")
+        self.tree_inv = ttk.Treeview(self.tab_inventario, columns=cols, show='headings', height=16)
+        for c in cols: self.tree_inv.heading(c, text=c)
+        self.tree_inv.column("Cód", width=120); self.tree_inv.column("Nombre", width=250)
+        self.tree_inv.tag_configure("critico", background="#ffcccc", foreground="red")
+        self.tree_inv.pack(padx=10, pady=5, fill="both", expand=True)
+        self.cargar_inventario()
+
+    def guardar_producto(self):
+        cod = self.entry_inv_cod.get().strip()
+        nom = self.entry_inv_nom.get().strip()
+        prov = self.entry_inv_prov.get().strip()
+        
+        try:
+            precio = float(self.entry_inv_final.get())
+            stock = int(self.entry_inv_stock.get())
+        except:
+            messagebox.showerror("Error", "El precio y stock deben ser números")
+            return
+
+        cur = self.conn.cursor()
+        
+        if cod:
+            cur.execute("SELECT id, stock, nombre FROM productos WHERE codigo=?", (cod,))
+            res = cur.fetchone()
+            if res:
+                nuevo_stock = res[1] + stock
+                cur.execute("UPDATE productos SET stock=?, precio_iva=?, nombre=?, proveedor=? WHERE id=?", 
+                            (nuevo_stock, precio, nom, prov, res[0]))
+                messagebox.showinfo("Actualizado", f"Producto '{res[2]}' detectado.\nStock sumado: {nuevo_stock}")
+                self.finalizar_guardado()
+                return
+
+        cur.execute("SELECT id, stock FROM productos WHERE nombre=? AND proveedor=?", (nom, prov))
+        res_nom = cur.fetchone()
+        
+        if res_nom:
+            nuevo_stock = res_nom[1] + stock
+            cur.execute("UPDATE productos SET stock=?, precio_iva=?, codigo=? WHERE id=?", (nuevo_stock, precio, cod, res_nom[0]))
+            messagebox.showinfo("Actualizado", f"Producto existente actualizado.\nNuevo Stock: {nuevo_stock}")
+        else:
+            cur.execute("INSERT INTO productos (codigo, nombre, proveedor, precio_iva, stock) VALUES (?, ?, ?, ?, ?)", 
+                        (cod, nom, prov, precio, stock))
+            messagebox.showinfo("Éxito", "Producto Nuevo Creado Correctamente.")
+        
+        self.finalizar_guardado()
+
+    def finalizar_guardado(self):
+        self.conn.commit()
+        self.entry_inv_cod.delete(0, tk.END)
+        self.entry_inv_nom.delete(0, tk.END)
+        self.entry_inv_prov.delete(0, tk.END)
+        self.entry_inv_final.delete(0, tk.END)
+        self.entry_inv_stock.delete(0, tk.END)
+        self.entry_inv_cod.focus() 
+        self.cargar_inventario()
+
+    def cargar_inventario(self):
+        for r in self.tree_inv.get_children(): self.tree_inv.delete(r)
+        cur = self.conn.cursor()
+        cur.execute("SELECT codigo, nombre, proveedor, precio_iva, stock FROM productos")
+        for row in cur.fetchall():
+            tag = "critico" if row[4] <= 0 else "normal"
+            nom_show = f"⚠️ {row[1]} (SIN STOCK)" if row[4] <= 0 else row[1]
+            self.tree_inv.insert("", tk.END, values=(row[0], nom_show, row[2], f"${int(row[3])}", row[4]), tags=(tag,))
+
+    # ==========================================
+    # MÓDULO 2: CAJA
+    # ==========================================
+    def interfaz_ventas(self):
+        frame_top = ttk.Frame(self.tab_ventas)
+        frame_top.pack(fill="x", padx=10, pady=10)
+
+        ttk.Label(frame_top, text="🔍 PISTOLEAR PRODUCTO:", font=('Arial', 14, 'bold'), foreground="blue").pack(side="left")
+        self.entry_scan = ttk.Entry(frame_top, width=25, font=('Arial', 14))
+        self.entry_scan.pack(side="left", padx=10)
+        self.entry_scan.bind("<Return>", self.evento_scan) 
+        self.entry_scan.focus_set() 
+
+        frame_doc = ttk.Frame(self.tab_ventas)
+        frame_doc.pack(fill="x", padx=10)
+        self.var_tipo = tk.StringVar(value="Boleta")
+        ttk.Radiobutton(frame_doc, text="Boleta", variable=self.var_tipo, value="Boleta", command=self.toggle_factura).pack(side="left")
+        ttk.Radiobutton(frame_doc, text="Factura", variable=self.var_tipo, value="Factura", command=self.toggle_factura).pack(side="left", padx=10)
+
+        self.frame_clie = ttk.Frame(self.tab_ventas)
+        ttk.Label(self.frame_clie, text="RUT:").pack(side="left"); self.vta_rut = ttk.Entry(self.frame_clie, width=12); self.vta_rut.pack(side="left")
+        ttk.Label(self.frame_clie, text="Razón:").pack(side="left"); self.vta_razon = ttk.Entry(self.frame_clie, width=20); self.vta_razon.pack(side="left")
+        ttk.Label(self.frame_clie, text="Dirección:").pack(side="left"); self.vta_dir = ttk.Entry(self.frame_clie, width=20); self.vta_dir.pack(side="left")
+
+        self.tree_cart = ttk.Treeview(self.tab_ventas, columns=("Prod", "Cant", "Total"), show="headings", height=12)
+        self.tree_cart.heading("Prod", text="Producto"); self.tree_cart.column("Prod", width=300)
+        self.tree_cart.heading("Cant", text="Cant"); self.tree_cart.column("Cant", width=50)
+        self.tree_cart.heading("Total", text="Total"); self.tree_cart.column("Total", width=100)
+        self.tree_cart.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        self.lbl_total_vta = ttk.Label(self.tab_ventas, text="TOTAL: $0", font=('Arial', 24, 'bold'), foreground="#27ae60")
+        self.lbl_total_vta.pack(pady=5)
+
+        tk.Button(self.tab_ventas, text="IMPRIMIR TICKET (F12)", bg="#2ecc71", fg="white", font=('Arial', 14, 'bold'), command=self.procesar_venta).pack(fill="x", padx=10, pady=10)
+        self.root.bind('<F12>', lambda e: self.procesar_venta())
+
+        self.carrito = []
+
+    def toggle_factura(self):
+        if self.var_tipo.get() == "Factura": self.frame_clie.pack(fill="x", padx=10, pady=5)
+        else: self.frame_clie.pack_forget()
+
+    def evento_scan(self, event):
+        codigo = self.entry_scan.get().strip()
+        if not codigo: return
+        
+        cur = self.conn.cursor()
+        cur.execute("SELECT id, nombre, precio_iva, stock FROM productos WHERE codigo=?", (codigo,))
+        prod = cur.fetchone()
+        
+        if prod:
+            encontrado = False
+            for item in self.carrito:
+                if item['id'] == prod[0]:
+                    if item['cant'] + 1 > prod[3]:
+                        messagebox.showwarning("Stock", "No queda más stock de este producto")
+                        self.entry_scan.delete(0, tk.END)
+                        return
+                    item['cant'] += 1
+                    item['total'] = item['cant'] * prod[2]
+                    encontrado = True
+                    break
+            
+            if not encontrado:
+                if prod[3] < 1:
+                    messagebox.showwarning("Stock", "Producto sin Stock")
+                    self.entry_scan.delete(0, tk.END)
+                    return
+                self.carrito.append({"id": prod[0], "nom": prod[1], "cant": 1, "precio": prod[2], "total": prod[2]})
+            
+            self.actualizar_carrito()
+            self.entry_scan.delete(0, tk.END) 
+        else:
+            messagebox.showerror("Error", "Código no encontrado en Bodega")
+            self.entry_scan.delete(0, tk.END)
+
+    def actualizar_carrito(self):
+        for i in self.tree_cart.get_children(): self.tree_cart.delete(i)
+        total = 0
+        for item in self.carrito:
+            self.tree_cart.insert("", tk.END, values=(item['nom'], item['cant'], f"${int(item['total'])}"))
+            total += item['total']
+        self.lbl_total_vta.config(text=f"TOTAL: ${int(total)}")
+
+    def procesar_venta(self):
+        if not self.carrito: return
+        total = sum(x['total'] for x in self.carrito)
+        fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        tipo = self.var_tipo.get()
+        
+        datos_clie = {"rut": "C.FINAL", "razon": "CONSUMIDOR FINAL"}
+        if tipo == "Factura":
+            datos_clie = {"rut": self.vta_rut.get(), "razon": self.vta_razon.get(), "dir": self.vta_dir.get()}
+
+        cur = self.conn.cursor()
+        for i in self.carrito:
+            cur.execute("UPDATE productos SET stock = stock - ? WHERE id=?", (i['cant'], i['id']))
+        
+        cur.execute("INSERT INTO ventas (fecha, tipo_doc, rut_cliente, total) VALUES (?, ?, ?, ?)", 
+                    (fecha, tipo, datos_clie['rut'], total))
+        self.conn.commit()
+        
+        self.generar_pdf(tipo, datos_clie, total, fecha)
+        
+        self.carrito = []
+        self.actualizar_carrito()
+        self.cargar_inventario()
+        self.entry_scan.focus()
+
+    def generar_pdf(self, tipo, cliente, total, fecha):
+        fname = f"ticket_{datetime.now().strftime('%H%M%S')}.pdf"
+        c = canvas.Canvas(fname, pagesize=(ANCHO_TICKET, ALTO_BASE + (len(self.carrito)*15)))
+        emp = self.datos_empresa
+        
+        y = ALTO_BASE + (len(self.carrito)*15) - 20
+        if os.path.exists("logo.jpeg"):
+            try:
+                c.drawImage("logo.jpeg", 25*mm, y - 30*mm, width=30*mm, height=30*mm, mask='auto')
+                y -= 35*mm
+            except: pass
+            
+        c.setFont("Helvetica-Bold", 10); c.drawCentredString(ANCHO_TICKET/2, y, emp['nom']); y-=12
+        c.setFont("Helvetica", 8); c.drawCentredString(ANCHO_TICKET/2, y, f"RUT: {emp['rut']}"); y-=10
+        c.drawCentredString(ANCHO_TICKET/2, y, emp['dir']); y-=10
+        c.drawCentredString(ANCHO_TICKET/2, y, f"Tel: {emp['tel']}"); y-=10
+        c.drawCentredString(ANCHO_TICKET/2, y, emp['mail']); y-=15
+        
+        c.line(2, y, ANCHO_TICKET-2, y); y-=10
+        c.setFont("Helvetica-Bold", 9); c.drawCentredString(ANCHO_TICKET/2, y, f"--- {tipo.upper()} ---"); y-=15
+        
+        c.setFont("Helvetica", 8)
+        c.drawString(5, y, f"Fecha: {fecha}")
+        y-=10
+        if tipo == "Factura":
+            c.drawString(5, y, f"Cliente: {cliente['razon']}")
+            y-=10
+            c.drawString(5, y, f"RUT: {cliente['rut']}")
+            y-=15
+
+        c.drawString(5, y, "Cant x Producto"); c.drawRightString(ANCHO_TICKET-5, y, "Total"); y-=5
+        c.line(2,y, ANCHO_TICKET-2, y); y-=10
+        
+        for i in self.carrito:
+            nom_corto = i['nom'][:18]
+            c.drawString(5, y, f"{i['cant']} x {nom_corto}"); c.drawRightString(ANCHO_TICKET-5, y, f"${int(i['total'])}"); y-=10
+            
+        y-=10; c.line(2,y, ANCHO_TICKET-2, y); y-=20
+        c.setFont("Helvetica-Bold", 14); c.drawRightString(ANCHO_TICKET-5, y, f"TOTAL: ${int(total)}")
+        
+        c.save()
+        if sys.platform == "win32": os.startfile(fname, "print")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SistemaVentasApp(root)
+    root.mainloop()

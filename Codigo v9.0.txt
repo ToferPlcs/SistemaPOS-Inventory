@@ -1,0 +1,619 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, Toplevel, simpledialog
+import sqlite3
+from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+import os
+import sys
+import subprocess
+import webbrowser
+
+# ==========================================
+# CONFIGURACIÓN GLOBAL
+# ==========================================
+ANCHO_TICKET = 80 * mm
+ALTO_BASE = 180 * mm
+
+# ==========================================
+# CLASE 1: LOGIN
+# ==========================================
+class LoginApp:
+    def __init__(self, root, on_login_success):
+        self.root = root
+        self.on_login_success = on_login_success
+        self.root.title("Acceso - Martillo 3 Golpes")
+        self.root.geometry("400x350")
+        
+        # Centrar
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width // 2) - 200
+        y = (screen_height // 2) - 175
+        self.root.geometry(f"400x350+{x}+{y}")
+
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        frame = ttk.Frame(root)
+        frame.pack(expand=True, fill="both", padx=30, pady=30)
+        
+        ttk.Label(frame, text="INICIO DE SESIÓN", font=("Segoe UI", 16, "bold"), foreground="#333").pack(pady=10)
+        ttk.Label(frame, text="Ferretería Martillo 3 Golpes", font=("Segoe UI", 10)).pack(pady=(0, 20))
+        
+        ttk.Label(frame, text="Usuario:", font=("Segoe UI", 11)).pack(anchor="w")
+        self.entry_user = ttk.Entry(frame, font=("Segoe UI", 11))
+        self.entry_user.pack(fill="x", pady=5)
+        self.entry_user.focus()
+        
+        ttk.Label(frame, text="Contraseña:", font=("Segoe UI", 11)).pack(anchor="w", pady=(10, 0))
+        self.entry_pass = ttk.Entry(frame, font=("Segoe UI", 11), show="*")
+        self.entry_pass.pack(fill="x", pady=5)
+        self.entry_pass.bind("<Return>", self.verificar_login)
+        
+        btn_login = tk.Button(frame, text="INGRESAR AL SISTEMA", bg="#2980b9", fg="white", 
+                              font=("Segoe UI", 11, "bold"), command=self.verificar_login)
+        btn_login.pack(fill="x", pady=25)
+
+    def verificar_login(self, event=None):
+        usuario = self.entry_user.get()
+        password = self.entry_pass.get()
+        if usuario == "Cristian" and password == "mart3golp":
+            self.root.destroy()
+            self.on_login_success()
+        else:
+            messagebox.showerror("Acceso Denegado", "Usuario o Contraseña incorrectos.")
+            self.entry_pass.delete(0, tk.END)
+
+# ==========================================
+# CLASE 2: SISTEMA PRINCIPAL
+# ==========================================
+class SistemaVentasApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("POS FERRETERÍA MARTILLO 3 GOLPES - V9.1 RUT INTELIGENTE")
+        self.root.geometry("1280x768")
+        
+        self.conn = sqlite3.connect("inventario_empresa.db")
+        self.crear_tablas()
+        
+        # Estilos
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("Treeview", rowheight=30, font=('Segoe UI', 10))
+        style.configure("Treeview.Heading", font=('Segoe UI', 10, 'bold'), background="#ddd")
+        style.configure("TButton", font=('Segoe UI', 10, 'bold'))
+        self.root.option_add('*TCombobox*Listbox.font', ('Segoe UI', 11))
+        
+        # Pestañas
+        tabControl = ttk.Notebook(root)
+        self.tab_inventario = ttk.Frame(tabControl)
+        self.tab_ventas = ttk.Frame(tabControl)
+        self.tab_clientes = ttk.Frame(tabControl)
+        self.tab_config = ttk.Frame(tabControl)
+        
+        tabControl.add(self.tab_inventario, text='1. BODEGA')
+        tabControl.add(self.tab_ventas, text='2. CAJA')
+        tabControl.add(self.tab_clientes, text='3. CLIENTES FACTURA')
+        tabControl.add(self.tab_config, text='4. EMPRESA')
+        tabControl.pack(expand=1, fill="both")
+        
+        self.interfaz_config()
+        self.interfaz_inventario()
+        self.interfaz_clientes()
+        self.interfaz_ventas()
+
+    def crear_tablas(self):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS productos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                codigo TEXT,
+                nombre TEXT NOT NULL,
+                proveedor TEXT,
+                precio_iva REAL NOT NULL,
+                stock INTEGER NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ventas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha TEXT,
+                tipo_doc TEXT,
+                rut_cliente TEXT,
+                total REAL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS config (
+                id INTEGER PRIMARY KEY,
+                nombre_empresa TEXT,
+                rut_empresa TEXT,
+                direccion TEXT,
+                telefono TEXT,
+                correo TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clientes (
+                rut TEXT PRIMARY KEY,
+                razon_social TEXT,
+                direccion TEXT,
+                giro TEXT
+            )
+        """)
+        
+        cursor.execute("SELECT count(*) FROM config")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                INSERT INTO config (id, nombre_empresa, rut_empresa, direccion, telefono, correo) 
+                VALUES (1, 'FERRETERÍA MARTILLO 3 GOLPES', '77.808.144-k', 'Simón Bolívar 284, Chillán', '995536798', 'Martillo3golpes@gmail.com')
+            """)
+        self.conn.commit()
+
+    # --- FUNCIÓN MAESTRA: FORMATEAR RUT ---
+    def formatear_rut_maestro(self, rut_raw):
+        """
+        Convierte cualquier entrada (21467439-4, 94674394, etc)
+        al formato: XX.XXX.XXX-X (con cero inicial si es necesario)
+        """
+        # 1. Limpieza: Quitar puntos, guiones y espacios
+        limpio = rut_raw.replace(".", "").replace("-", "").replace(" ", "").upper()
+        
+        # Validación básica
+        if len(limpio) < 2: return rut_raw # Muy corto para procesar
+
+        # 2. Separar Cuerpo y Dígito Verificador (DV)
+        cuerpo = limpio[:-1]
+        dv = limpio[-1]
+
+        # 3. Rellenar con ceros a la izquierda hasta tener 8 dígitos en el cuerpo
+        # Ejemplo: Si es 9.467.439 (7 dígitos), agrega un 0 -> 09467439
+        while len(cuerpo) < 8:
+            cuerpo = "0" + cuerpo
+
+        # 4. Formatear con puntos
+        # Cuerpo tiene 8 dígitos: ABCDEFGH -> AB.CDE.FGH
+        parte1 = cuerpo[0:2]
+        parte2 = cuerpo[2:5]
+        parte3 = cuerpo[5:8]
+
+        return f"{parte1}.{parte2}.{parte3}-{dv}"
+
+    # ==========================================
+    # MÓDULO 4: CONFIGURACIÓN
+    # ==========================================
+    def interfaz_config(self):
+        frame = ttk.LabelFrame(self.tab_config, text="Datos de la Ferretería")
+        frame.pack(padx=50, pady=30, fill="both")
+        etiquetas = [("Nombre:", "nom"), ("RUT:", "rut"), ("Dirección:", "dir"), ("Teléfono:", "tel"), ("Correo:", "mail")]
+        self.entries_cfg = {}
+        for i, (texto, clave) in enumerate(etiquetas):
+            ttk.Label(frame, text=texto).grid(row=i, column=0, pady=10, sticky="e")
+            entry = ttk.Entry(frame, width=50)
+            entry.grid(row=i, column=1, pady=10, padx=10)
+            self.entries_cfg[clave] = entry
+        ttk.Button(frame, text="GUARDAR CAMBIOS", command=self.guardar_config).grid(row=5, column=1, pady=20)
+        self.cargar_datos_config()
+
+    def cargar_datos_config(self):
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM config WHERE id=1")
+        data = cur.fetchone()
+        if data:
+            self.entries_cfg['nom'].delete(0, tk.END); self.entries_cfg['nom'].insert(0, data[1])
+            self.entries_cfg['rut'].delete(0, tk.END); self.entries_cfg['rut'].insert(0, data[2])
+            self.entries_cfg['dir'].delete(0, tk.END); self.entries_cfg['dir'].insert(0, data[3])
+            self.entries_cfg['tel'].delete(0, tk.END); self.entries_cfg['tel'].insert(0, data[4])
+            self.entries_cfg['mail'].delete(0, tk.END); self.entries_cfg['mail'].insert(0, data[5])
+            self.datos_empresa = {"nom": data[1], "rut": data[2], "dir": data[3], "tel": data[4], "mail": data[5]}
+
+    def guardar_config(self):
+        vals = [self.entries_cfg[k].get() for k in ['nom', 'rut', 'dir', 'tel', 'mail']]
+        self.conn.cursor().execute("UPDATE config SET nombre_empresa=?, rut_empresa=?, direccion=?, telefono=?, correo=? WHERE id=1", vals)
+        self.conn.commit()
+        messagebox.showinfo("Éxito", "Datos actualizados correctamente")
+        self.cargar_datos_config()
+
+    # ==========================================
+    # MÓDULO 3: CLIENTES FACTURA
+    # ==========================================
+    def interfaz_clientes(self):
+        frame = ttk.LabelFrame(self.tab_clientes, text="Gestión de Clientes Frecuentes")
+        frame.pack(padx=20, pady=20, fill="x")
+        
+        ttk.Label(frame, text="RUT Cliente:").grid(row=0, column=0, padx=5, pady=5)
+        self.cli_rut = ttk.Entry(frame, width=15)
+        self.cli_rut.grid(row=0, column=1, padx=5)
+        # Formatear al salir del campo o dar enter
+        self.cli_rut.bind("<Return>", self.auto_formato_clientes_tab)
+        
+        ttk.Label(frame, text="Razón Social:").grid(row=0, column=2, padx=5)
+        self.cli_razon = ttk.Entry(frame, width=30)
+        self.cli_razon.grid(row=0, column=3, padx=5)
+        
+        ttk.Label(frame, text="Dirección:").grid(row=0, column=4, padx=5)
+        self.cli_dir = ttk.Entry(frame, width=25)
+        self.cli_dir.grid(row=0, column=5, padx=5)
+
+        ttk.Button(frame, text="GUARDAR / ACTUALIZAR", command=self.guardar_cliente_manual).grid(row=0, column=6, padx=10)
+        
+        self.tree_cli = ttk.Treeview(self.tab_clientes, columns=("RUT", "Razón", "Dirección"), show='headings', height=15)
+        self.tree_cli.heading("RUT", text="RUT"); self.tree_cli.column("RUT", width=120)
+        self.tree_cli.heading("Razón", text="Razón Social"); self.tree_cli.column("Razón", width=300)
+        self.tree_cli.heading("Dirección", text="Dirección"); self.tree_cli.column("Dirección", width=300)
+        self.tree_cli.pack(padx=20, pady=10, fill="both", expand=True)
+        
+        self.tree_cli.bind("<Double-1>", self.cargar_cliente_para_editar)
+        self.cargar_clientes_tab()
+
+    def auto_formato_clientes_tab(self, event):
+        rut_sucio = self.cli_rut.get()
+        rut_limpio = self.formatear_rut_maestro(rut_sucio)
+        self.cli_rut.delete(0, tk.END)
+        self.cli_rut.insert(0, rut_limpio)
+        # Opcional: Buscar si ya existe para rellenar datos
+        self.buscar_y_rellenar_en_tab_cliente(rut_limpio)
+
+    def buscar_y_rellenar_en_tab_cliente(self, rut):
+        cur = self.conn.cursor()
+        cur.execute("SELECT razon_social, direccion FROM clientes WHERE rut=?", (rut,))
+        res = cur.fetchone()
+        if res:
+            self.cli_razon.delete(0, tk.END); self.cli_razon.insert(0, res[0])
+            self.cli_dir.delete(0, tk.END); self.cli_dir.insert(0, res[1])
+
+    def guardar_cliente_manual(self):
+        # 1. Formatear RUT antes de guardar
+        rut_raw = self.cli_rut.get().strip()
+        rut = self.formatear_rut_maestro(rut_raw)
+        
+        razon = self.cli_razon.get().strip()
+        direccion = self.cli_dir.get().strip()
+        
+        if not rut or not razon:
+            messagebox.showwarning("Faltan datos", "RUT y Razón Social son obligatorios")
+            return
+            
+        cur = self.conn.cursor()
+        # INSERT OR REPLACE actualiza todo (borra dirección antigua y pone la nueva)
+        cur.execute("INSERT OR REPLACE INTO clientes (rut, razon_social, direccion, giro) VALUES (?, ?, ?, ?)", 
+                    (rut, razon, direccion, ""))
+        self.conn.commit()
+        messagebox.showinfo("Éxito", f"Cliente {rut} guardado/actualizado correctamente")
+        
+        self.cli_rut.delete(0, tk.END); self.cli_razon.delete(0, tk.END); self.cli_dir.delete(0, tk.END)
+        self.cargar_clientes_tab()
+
+    def cargar_clientes_tab(self):
+        for i in self.tree_cli.get_children(): self.tree_cli.delete(i)
+        cur = self.conn.cursor()
+        cur.execute("SELECT rut, razon_social, direccion FROM clientes")
+        for row in cur.fetchall():
+            self.tree_cli.insert("", tk.END, values=row)
+
+    def cargar_cliente_para_editar(self, event):
+        item = self.tree_cli.selection()
+        if not item: return
+        vals = self.tree_cli.item(item, "values")
+        self.cli_rut.delete(0, tk.END); self.cli_rut.insert(0, vals[0])
+        self.cli_razon.delete(0, tk.END); self.cli_razon.insert(0, vals[1])
+        self.cli_dir.delete(0, tk.END); self.cli_dir.insert(0, vals[2])
+
+    # ==========================================
+    # MÓDULO 1: BODEGA
+    # ==========================================
+    def interfaz_inventario(self):
+        frame_form = ttk.LabelFrame(self.tab_inventario, text="Ingreso de Mercadería")
+        frame_form.pack(padx=10, pady=10, fill="x")
+        ttk.Label(frame_form, text="1. Cód. Barras (Pistolear):", font=('Segoe UI', 10, 'bold')).grid(row=0, column=0, padx=5, pady=5)
+        self.entry_inv_cod = ttk.Entry(frame_form, width=25)
+        self.entry_inv_cod.grid(row=0, column=1, padx=5)
+        self.entry_inv_cod.bind("<Return>", lambda e: self.entry_inv_nom.focus())
+        ttk.Label(frame_form, text="2. Nombre:").grid(row=0, column=2, padx=5)
+        self.entry_inv_nom = ttk.Entry(frame_form, width=35)
+        self.entry_inv_nom.grid(row=0, column=3, padx=5)
+        ttk.Label(frame_form, text="3. Proveedor:").grid(row=0, column=4, padx=5)
+        self.entry_inv_prov = ttk.Entry(frame_form, width=20)
+        self.entry_inv_prov.grid(row=0, column=5, padx=5)
+        ttk.Label(frame_form, text="Precio NETO:").grid(row=1, column=0, padx=5, pady=10)
+        self.entry_inv_neto = ttk.Entry(frame_form, width=15)
+        self.entry_inv_neto.grid(row=1, column=1, padx=5)
+        self.entry_inv_neto.bind("<KeyRelease>", self.calc_iva_bodega)
+        ttk.Label(frame_form, text="Precio CON IVA:").grid(row=1, column=2, padx=5)
+        self.entry_inv_final = ttk.Entry(frame_form, width=15, font=('Segoe UI', 10, 'bold'))
+        self.entry_inv_final.grid(row=1, column=3, padx=5)
+        self.entry_inv_final.bind("<KeyRelease>", self.calc_neto_bodega)
+        ttk.Label(frame_form, text="Cantidad Stock:").grid(row=1, column=4, padx=5)
+        self.entry_inv_stock = ttk.Entry(frame_form, width=10)
+        self.entry_inv_stock.grid(row=1, column=5, padx=5)
+        btn_save = tk.Button(frame_form, text="GUARDAR PRODUCTO", bg="#3498db", fg="white", font=('Arial', 10, 'bold'), command=self.guardar_producto)
+        btn_save.grid(row=1, column=6, padx=10)
+        cols = ("Cód", "Nombre", "Proveedor", "Neto", "Con IVA", "Stock")
+        self.tree_inv = ttk.Treeview(self.tab_inventario, columns=cols, show='headings', height=16)
+        for c in cols: self.tree_inv.heading(c, text=c)
+        self.tree_inv.column("Cód", width=100); self.tree_inv.column("Nombre", width=250)
+        self.tree_inv.column("Neto", width=80); self.tree_inv.column("Con IVA", width=80); self.tree_inv.column("Stock", width=60)
+        self.tree_inv.tag_configure("critico", background="#ffcccc", foreground="red")
+        self.tree_inv.pack(padx=10, pady=5, fill="both", expand=True)
+        self.cargar_inventario()
+
+    def calc_iva_bodega(self, event):
+        try:
+            neto = float(self.entry_inv_neto.get())
+            final = int(neto * 1.19)
+            self.entry_inv_final.delete(0, tk.END); self.entry_inv_final.insert(0, str(final))
+        except ValueError: pass
+
+    def calc_neto_bodega(self, event):
+        try:
+            final = float(self.entry_inv_final.get())
+            neto = int(final / 1.19)
+            self.entry_inv_neto.delete(0, tk.END); self.entry_inv_neto.insert(0, str(neto))
+        except ValueError: pass
+
+    def guardar_producto(self):
+        cod = self.entry_inv_cod.get().strip(); nom = self.entry_inv_nom.get().strip(); prov = self.entry_inv_prov.get().strip()
+        try: precio = float(self.entry_inv_final.get()); stock = int(self.entry_inv_stock.get())
+        except: messagebox.showerror("Error", "Revisa que los precios y stock sean números válidos"); return
+        cur = self.conn.cursor()
+        if cod:
+            cur.execute("SELECT id, stock, nombre FROM productos WHERE codigo=?", (cod,))
+            res = cur.fetchone()
+            if res:
+                nuevo_stock = res[1] + stock
+                cur.execute("UPDATE productos SET stock=?, precio_iva=?, nombre=?, proveedor=? WHERE id=?", (nuevo_stock, precio, nom, prov, res[0]))
+                messagebox.showinfo("Actualizado", f"Producto '{res[2]}' actualizado.\nStock Nuevo: {nuevo_stock}")
+                self.finalizar_guardado(); return
+        cur.execute("SELECT id, stock FROM productos WHERE nombre=? AND proveedor=?", (nom, prov))
+        res_nom = cur.fetchone()
+        if res_nom:
+            nuevo_stock = res_nom[1] + stock
+            cur.execute("UPDATE productos SET stock=?, precio_iva=?, codigo=? WHERE id=?", (nuevo_stock, precio, cod, res_nom[0]))
+            messagebox.showinfo("Actualizado", f"Stock sumado.\nTotal: {nuevo_stock}")
+        else:
+            cur.execute("INSERT INTO productos (codigo, nombre, proveedor, precio_iva, stock) VALUES (?, ?, ?, ?, ?)", (cod, nom, prov, precio, stock))
+            messagebox.showinfo("Éxito", "Producto Nuevo Creado.")
+        self.finalizar_guardado()
+
+    def finalizar_guardado(self):
+        self.conn.commit()
+        for e in [self.entry_inv_cod, self.entry_inv_nom, self.entry_inv_prov, self.entry_inv_neto, self.entry_inv_final, self.entry_inv_stock]: e.delete(0, tk.END)
+        self.entry_inv_cod.focus(); self.cargar_inventario()
+
+    def cargar_inventario(self):
+        for r in self.tree_inv.get_children(): self.tree_inv.delete(r)
+        cur = self.conn.cursor()
+        cur.execute("SELECT codigo, nombre, proveedor, precio_iva, stock FROM productos")
+        for row in cur.fetchall():
+            tag = "critico" if row[4] <= 0 else "normal"
+            nom_show = f"⚠️ {row[1]}" if row[4] <= 0 else row[1]
+            neto = int(row[3] / 1.19)
+            self.tree_inv.insert("", tk.END, values=(row[0], nom_show, row[2], f"${neto}", f"${int(row[3])}", row[4]), tags=(tag,))
+
+    # ==========================================
+    # MÓDULO 2: CAJA (Actualizado con Clientes y RUT)
+    # ==========================================
+    def interfaz_ventas(self):
+        frame_top = ttk.Frame(self.tab_ventas)
+        frame_top.pack(fill="x", padx=10, pady=10)
+        
+        frame_scan = ttk.LabelFrame(frame_top, text="Opción A: Pistola")
+        frame_scan.pack(side="left", padx=5, fill="y")
+        self.entry_scan = ttk.Entry(frame_scan, width=20, font=('Arial', 14))
+        self.entry_scan.pack(padx=10, pady=10)
+        self.entry_scan.bind("<Return>", self.evento_scan_pistola)
+        self.entry_scan.focus_set()
+        
+        frame_manual = ttk.LabelFrame(frame_top, text="Opción B: Buscador Manual")
+        frame_manual.pack(side="left", padx=20, fill="y")
+        tk.Button(frame_manual, text="🔍 BUSCAR POR NOMBRE", bg="#f39c12", fg="white", command=self.abrir_buscador_manual).pack(padx=10, pady=10, fill="both", expand=True)
+        
+        frame_doc = ttk.Frame(self.tab_ventas)
+        frame_doc.pack(fill="x", padx=10)
+        self.var_tipo = tk.StringVar(value="Boleta")
+        ttk.Radiobutton(frame_doc, text="Boleta", variable=self.var_tipo, value="Boleta", command=self.toggle_factura).pack(side="left")
+        ttk.Radiobutton(frame_doc, text="Factura", variable=self.var_tipo, value="Factura", command=self.toggle_factura).pack(side="left", padx=10)
+        
+        self.frame_clie = ttk.Frame(self.tab_ventas)
+        ttk.Label(self.frame_clie, text="RUT (Enter para buscar):").pack(side="left")
+        self.vta_rut = ttk.Entry(self.frame_clie, width=15) # Aumenté un poco el ancho
+        self.vta_rut.pack(side="left")
+        self.vta_rut.bind("<Return>", self.buscar_cliente_factura) # ENTER DISPARA BÚSQUEDA Y FORMATO
+
+        ttk.Label(self.frame_clie, text="Razón:").pack(side="left")
+        self.vta_razon = ttk.Entry(self.frame_clie, width=20)
+        self.vta_razon.pack(side="left")
+        
+        ttk.Label(self.frame_clie, text="Dirección:").pack(side="left")
+        self.vta_dir = ttk.Entry(self.frame_clie, width=20)
+        self.vta_dir.pack(side="left")
+
+        self.tree_cart = ttk.Treeview(self.tab_ventas, columns=("Prod", "Cant", "Total"), show="headings", height=12)
+        self.tree_cart.heading("Prod", text="Producto"); self.tree_cart.column("Prod", width=400)
+        self.tree_cart.heading("Cant", text="Cant"); self.tree_cart.column("Cant", width=80)
+        self.tree_cart.heading("Total", text="Total"); self.tree_cart.column("Total", width=120)
+        self.tree_cart.pack(fill="both", expand=True, padx=10, pady=5)
+        self.lbl_total_vta = ttk.Label(self.tab_ventas, text="TOTAL: $0", font=('Arial', 24, 'bold'), foreground="#27ae60")
+        self.lbl_total_vta.pack(pady=5)
+        tk.Button(self.tab_ventas, text="IMPRIMIR TICKET (F12)", bg="#2ecc71", fg="white", font=('Arial', 14, 'bold'), command=self.procesar_venta).pack(fill="x", padx=10, pady=10)
+        self.root.bind('<F12>', lambda e: self.procesar_venta())
+        self.carrito = []
+
+    def toggle_factura(self):
+        if self.var_tipo.get() == "Factura": self.frame_clie.pack(fill="x", padx=10, pady=5)
+        else: self.frame_clie.pack_forget()
+
+    # --- BÚSQUEDA CON FORMATO AUTOMÁTICO ---
+    def buscar_cliente_factura(self, event):
+        rut_sucio = self.vta_rut.get().strip()
+        if not rut_sucio: return
+        
+        # 1. Aplicar Formato Inteligente
+        rut_limpio = self.formatear_rut_maestro(rut_sucio)
+        self.vta_rut.delete(0, tk.END)
+        self.vta_rut.insert(0, rut_limpio)
+        
+        # 2. Buscar en BD
+        cur = self.conn.cursor()
+        cur.execute("SELECT razon_social, direccion FROM clientes WHERE rut=?", (rut_limpio,))
+        res = cur.fetchone()
+        
+        if res:
+            self.vta_razon.delete(0, tk.END); self.vta_razon.insert(0, res[0])
+            self.vta_dir.delete(0, tk.END); self.vta_dir.insert(0, res[1])
+        else:
+            # Limpiar para que escriba los nuevos
+            self.vta_razon.delete(0, tk.END)
+            self.vta_dir.delete(0, tk.END)
+            messagebox.showinfo("Nuevo Cliente", "RUT no registrado. Ingrese los datos y se guardarán automáticamente.")
+            self.vta_razon.focus()
+
+    def evento_scan_pistola(self, event):
+        codigo = self.entry_scan.get().strip()
+        if not codigo: return
+        cur = self.conn.cursor()
+        cur.execute("SELECT id, nombre, precio_iva, stock FROM productos WHERE codigo=?", (codigo,))
+        prod = cur.fetchone()
+        if prod:
+            self.solicitar_cantidad_y_agregar(prod)
+            self.entry_scan.delete(0, tk.END)
+        else:
+            messagebox.showerror("Error", "Código no encontrado")
+            self.entry_scan.delete(0, tk.END)
+
+    def abrir_buscador_manual(self):
+        vent_buscar = Toplevel(self.root)
+        vent_buscar.title("Buscador de Productos")
+        vent_buscar.geometry("600x400")
+        ttk.Label(vent_buscar, text="Escribe nombre del producto:").pack(pady=5)
+        entry_busq = ttk.Entry(vent_buscar, width=40); entry_busq.pack(pady=5); entry_busq.focus()
+        tree_res = ttk.Treeview(vent_buscar, columns=("ID", "Nom", "Pre", "Stk"), show="headings")
+        tree_res.heading("Nom", text="Producto"); tree_res.column("Nom", width=300)
+        tree_res.heading("Pre", text="Precio"); tree_res.column("Pre", width=80)
+        tree_res.heading("Stk", text="Stock"); tree_res.column("Stk", width=50)
+        tree_res.pack(fill="both", expand=True, padx=10)
+        def buscar_triger(e):
+            query = entry_busq.get(); 
+            for row in tree_res.get_children(): tree_res.delete(row)
+            cur = self.conn.cursor(); cur.execute("SELECT id, nombre, precio_iva, stock FROM productos WHERE nombre LIKE ?", (f"%{query}%",))
+            for p in cur.fetchall(): tree_res.insert("", tk.END, values=(p[0], p[1], f"${int(p[2])}", p[3]))
+        def seleccionar_doble_click(e):
+            item = tree_res.selection()
+            if not item: return
+            vals = tree_res.item(item, "values"); precio_limpio = float(vals[2].replace("$", ""))
+            prod_tuple = (vals[0], vals[1], precio_limpio, int(vals[3]))
+            vent_buscar.destroy(); self.solicitar_cantidad_y_agregar(prod_tuple)
+        entry_busq.bind("<KeyRelease>", buscar_triger); tree_res.bind("<Double-1>", seleccionar_doble_click)
+
+    def solicitar_cantidad_y_agregar(self, prod):
+        id_p, nom, pre, stk = prod
+        if stk < 1: messagebox.showwarning("Sin Stock", f"El producto {nom} tiene stock 0."); return
+        self.cantidad_seleccionada = None
+        def confirmar_cantidad(event=None):
+            try:
+                c = int(entry_cant.get())
+                if c < 1: return
+                if c > stk: messagebox.showerror("Error de Stock", "No existe la cantidad deseada por falta de stock"); entry_cant.selection_range(0, tk.END)
+                else: self.cantidad_seleccionada = c; win_cant.destroy()
+            except ValueError: pass
+        win_cant = Toplevel(self.root); win_cant.title("Cantidad"); win_cant.geometry("300x150")
+        x = self.root.winfo_x() + (self.root.winfo_width()//2) - 150; y = self.root.winfo_y() + (self.root.winfo_height()//2) - 75
+        win_cant.geometry(f"+{x}+{y}")
+        ttk.Label(win_cant, text=f"Producto: {nom}").pack(pady=5); ttk.Label(win_cant, text=f"Stock Disp: {stk}", foreground="blue").pack(pady=0)
+        ttk.Label(win_cant, text="Ingrese Cantidad:").pack(pady=5)
+        entry_cant = ttk.Entry(win_cant, width=10, font=('Arial', 12)); entry_cant.pack(pady=5); entry_cant.insert(0, "1"); entry_cant.select_range(0, tk.END); entry_cant.focus()
+        entry_cant.bind("<Return>", confirmar_cantidad)
+        tk.Button(win_cant, text="ACEPTAR", bg="#2ecc71", fg="white", command=confirmar_cantidad).pack(pady=5)
+        self.root.wait_window(win_cant)
+        if self.cantidad_seleccionada: self.agregar_al_carrito_final(id_p, nom, pre, self.cantidad_seleccionada)
+
+    def agregar_al_carrito_final(self, id_p, nom, pre, cantidad):
+        encontrado = False
+        for item in self.carrito:
+            if item['id'] == id_p: item['cant'] += cantidad; item['total'] = item['cant'] * pre; encontrado = True; break
+        if not encontrado: self.carrito.append({"id": id_p, "nom": nom, "cant": cantidad, "precio": pre, "total": pre * cantidad})
+        self.actualizar_carrito()
+
+    def actualizar_carrito(self):
+        for i in self.tree_cart.get_children(): self.tree_cart.delete(i)
+        total = 0
+        for item in self.carrito: self.tree_cart.insert("", tk.END, values=(item['nom'], item['cant'], f"${int(item['total'])}")); total += item['total']
+        self.lbl_total_vta.config(text=f"TOTAL: ${int(total)}")
+
+    def procesar_venta(self):
+        if not self.carrito: return
+        total = sum(x['total'] for x in self.carrito); fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); tipo = self.var_tipo.get()
+        datos_clie = {"rut": "C.FINAL", "razon": "CONSUMIDOR FINAL"}
+        
+        if tipo == "Factura": 
+            rut_in = self.vta_rut.get().strip()
+            # Formatear una última vez por seguridad
+            rut_in = self.formatear_rut_maestro(rut_in)
+            
+            razon_in = self.vta_razon.get().strip()
+            dir_in = self.vta_dir.get().strip()
+            
+            if not rut_in or not razon_in:
+                messagebox.showerror("Error", "Para Factura debe ingresar RUT y Razón Social"); return
+            
+            datos_clie = {"rut": rut_in, "razon": razon_in, "dir": dir_in}
+            
+            # --- ACTUALIZACIÓN DINÁMICA ---
+            # INSERT OR REPLACE asegura que si el RUT ya existe, se borre y se ponga el nuevo (con nueva dirección)
+            try:
+                cur = self.conn.cursor()
+                cur.execute("INSERT OR REPLACE INTO clientes (rut, razon_social, direccion, giro) VALUES (?, ?, ?, ?)", 
+                            (rut_in, razon_in, dir_in, ""))
+                self.conn.commit()
+                self.cargar_clientes_tab() # Refrescar tabla visual
+            except Exception as e:
+                print(e)
+
+        cur = self.conn.cursor()
+        for i in self.carrito: cur.execute("UPDATE productos SET stock = stock - ? WHERE id=?", (i['cant'], i['id']))
+        cur.execute("INSERT INTO ventas (fecha, tipo_doc, rut_cliente, total) VALUES (?, ?, ?, ?)", (fecha, tipo, datos_clie['rut'], total))
+        self.conn.commit()
+        self.generar_pdf(tipo, datos_clie, total, fecha)
+        self.carrito = []; self.actualizar_carrito(); self.cargar_inventario(); self.entry_scan.focus()
+
+    def generar_pdf(self, tipo, cliente, total, fecha):
+        fname = f"ticket_{datetime.now().strftime('%H%M%S')}.pdf"
+        c = canvas.Canvas(fname, pagesize=(ANCHO_TICKET, ALTO_BASE + (len(self.carrito)*15)))
+        emp = self.datos_empresa
+        y = ALTO_BASE + (len(self.carrito)*15) - 20
+        if os.path.exists("logo.jpeg"):
+            try: c.drawImage("logo.jpeg", 25*mm, y - 30*mm, width=30*mm, height=30*mm, mask='auto'); y -= 35*mm
+            except: pass
+        c.setFont("Helvetica-Bold", 10); c.drawCentredString(ANCHO_TICKET/2, y, emp['nom']); y-=12
+        c.setFont("Helvetica", 8); c.drawCentredString(ANCHO_TICKET/2, y, f"RUT: {emp['rut']}"); y-=10
+        c.drawCentredString(ANCHO_TICKET/2, y, emp['dir']); y-=10
+        c.drawCentredString(ANCHO_TICKET/2, y, f"Tel: {emp['tel']}"); y-=10
+        c.drawCentredString(ANCHO_TICKET/2, y, emp['mail']); y-=15
+        c.line(2, y, ANCHO_TICKET-2, y); y-=10
+        c.setFont("Helvetica-Bold", 9); c.drawCentredString(ANCHO_TICKET/2, y, f"--- {tipo.upper()} ---"); y-=15
+        c.setFont("Helvetica", 8); c.drawString(5, y, f"Fecha: {fecha}"); y-=10
+        if tipo == "Factura": c.drawString(5, y, f"Cliente: {cliente['razon']}"); y-=10; c.drawString(5, y, f"RUT: {cliente['rut']}"); y-=15
+        c.drawString(5, y, "Cant x Producto"); c.drawRightString(ANCHO_TICKET-5, y, "Total"); y-=5
+        c.line(2,y, ANCHO_TICKET-2, y); y-=10
+        for i in self.carrito: nom_corto = i['nom'][:18]; c.drawString(5, y, f"{i['cant']} x {nom_corto}"); c.drawRightString(ANCHO_TICKET-5, y, f"${int(i['total'])}"); y-=10
+        y-=10; c.line(2,y, ANCHO_TICKET-2, y); y-=20
+        c.setFont("Helvetica-Bold", 14); c.drawRightString(ANCHO_TICKET-5, y, f"TOTAL: ${int(total)}")
+        c.save()
+        path_pdf = os.path.abspath(fname)
+        if sys.platform == "win32":
+            try: os.startfile(path_pdf, "print")
+            except: pass
+        webbrowser.open(path_pdf)
+
+if __name__ == "__main__":
+    root_principal = tk.Tk()
+    root_principal.withdraw()
+    def iniciar_sistema_completo():
+        root_principal.deiconify()
+        app = SistemaVentasApp(root_principal)
+    login_window = tk.Toplevel(root_principal)
+    app_login = LoginApp(login_window, iniciar_sistema_completo)
+    def on_login_close(): root_principal.destroy()
+    login_window.protocol("WM_DELETE_WINDOW", on_login_close)
+    root_principal.mainloop()
